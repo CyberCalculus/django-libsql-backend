@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "django-libsql-backend"
+version = "0.1.0"
+description = "Django database backend for libSQL/Turso — SQLite-compatible remote databases over HTTP"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Yaseen", email = "sinescode@example.com"},
+]
+keywords = [
+    "django",
+    "libsql",
+    "turso",
+    "sqlite",
+    "database",
+    "backend",
+    "remote",
+    "http",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Django",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Framework :: Django :: 6.0",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "Django>=4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/sinescode/django-libsql-backend"
+Repository = "https://github.com/sinescode/django-libsql-backend"
+Issues = "https://github.com/sinescode/django-libsql-backend/issues"
+
+[tool.setuptools]
+packages = ["django_libsql"]
