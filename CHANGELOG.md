@@ -19,5 +19,8 @@ All notable changes to `django-libsql-backend` are documented in this file.
 - Introspection proxy — delegates to Django's SQLite introspection
 - `DatabaseClient` — `python manage.py dbshell` integration with `turso db shell`
 - `DatabaseCreation` — test database create/destroy
+- Local SQLite support — auto-detects file paths vs remote URLs from `NAME`
+- `LocalSQLiteCursor` — wraps `sqlite3.Cursor` with `%s` → `?` conversion
+- Full transaction support for local connections (WAL mode, savepoints, FK enforcement)
 - Support for Django 4.2, 5.0, 5.1, 6.0
 - Support for Python 3.10, 3.11, 3.12, 3.13

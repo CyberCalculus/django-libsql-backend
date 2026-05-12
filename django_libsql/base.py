@@ -1,17 +1,21 @@
 """
 Django database backend for libSQL/Turso.
 
-Communicates with remote libSQL/SQLite databases via Turso's HTTP REST API
-(Hrana protocol over HTTP). Modeled on Django's built-in SQLite backend so
-most SQLite-compatible features, ORM queries, and migrations work out of
-the box.
+Supports both remote Turso/libSQL databases via HTTP REST API and local
+SQLite files. Connection type is auto-detected from the NAME setting.
 
-Each HTTP request to Turso is an independent SQLite connection — there is
-no persistent session. Transactions, savepoints, and connection-stateful
-PRAGMAs behave accordingly.
+Remote (Turso HTTP):
+    Each HTTP request is an independent SQLite connection — there is no
+    persistent session. Transactions, savepoints, and connection-stateful
+    PRAGMAs behave accordingly.
+
+Local (sqlite3 file):
+    Uses Python's built-in sqlite3 module. Full transaction support, WAL
+    mode, and persistent PRAGMA state within a connection.
 """
 
 import json
+import sqlite3
 import urllib.request
 import urllib.error
 import re
@@ -31,6 +35,23 @@ from .introspection import DatabaseIntrospection
 from .schema import DatabaseSchemaEditor
 
 FORMAT_QMARK_REGEX = re.compile(r"(?<!%)%s")
+
+
+def _is_local_name(name):
+    """Return True if NAME looks like a local file path, False if remote URL."""
+    if not name:
+        return False
+    if name.startswith(("http://", "https://", "libsql://")):
+        return False
+    if name.startswith(("/", ".")):
+        return True
+    if name.endswith((".sqlite3", ".db", ".sqlite", ".s3db", ".sl3")):
+        return True
+    # Bare hostname like "db.turso.io" — has dots, no path separators,
+    # and does not match any known file extension above.
+    if "." in name and "/" not in name and "\\" not in name:
+        return False
+    return True
 
 
 def _py_value_to_turso_type(value):
@@ -206,6 +227,72 @@ class TursoCursor:
         return row
 
 
+class LocalSQLiteCursor:
+    """DB-API 2.0 compatible cursor wrapping a local sqlite3.Cursor."""
+
+    def __init__(self, sqlite_conn):
+        self._cursor = sqlite_conn.cursor()
+        self._closed = False
+
+    def _convert_query(self, query):
+        return FORMAT_QMARK_REGEX.sub("?", query).replace("%%", "%")
+
+    def execute(self, sql, params=None):
+        if self._closed:
+            raise RuntimeError("Cursor is closed")
+        sql = self._convert_query(sql)
+        if params:
+            self._cursor.execute(sql, params)
+        else:
+            self._cursor.execute(sql)
+        return self
+
+    def executemany(self, sql, param_list):
+        if self._closed:
+            raise RuntimeError("Cursor is closed")
+        sql = self._convert_query(sql)
+        self._cursor.executemany(sql, param_list)
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def fetchmany(self, size=None):
+        return self._cursor.fetchmany(size)
+
+    def close(self):
+        self._closed = True
+        self._cursor.close()
+
+    @property
+    def closed(self):
+        return self._closed
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def lastrowid(self):
+        return self._cursor.lastrowid
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = self.fetchone()
+        if row is None:
+            raise StopIteration
+        return row
+
+
 class DatabaseWrapper(BaseDatabaseWrapper):
     vendor = "libsql"
     display_name = "libSQL (Turso)"
@@ -291,20 +378,39 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     def get_connection_params(self):
         settings_dict = self.settings_dict
-        name = settings_dict["NAME"]
+        name = settings_dict.get("NAME")
         if not name:
-            raise ImproperlyConfigured(
-                "Turso backend requires NAME with the database URL "
-                "(e.g. https://db-name.turso.io)"
-            )
+            # Django's _nodb_cursor passes NAME=None for test DB teardown.
+            # Default to in-memory local SQLite.
+            return {"is_local": True, "filepath": ":memory:"}
+        if _is_local_name(name):
+            # sqlite3.connect() handles relative paths natively — no
+            # need to resolve against BASE_DIR.
+            return {"is_local": True, "filepath": name}
+        # Remote: convert libsql:// → https://, add https:// to bare hostnames
+        if name.startswith("libsql://"):
+            url = name.replace("libsql://", "https://", 1)
+        elif "://" in name:
+            url = name
+        else:
+            url = f"https://{name}"
         return {
-            "url": name if "://" in name else f"https://{name}",
+            "is_local": False,
+            "url": url,
             "auth_token": settings_dict.get("AUTH_TOKEN", ""),
             "timeout": settings_dict.get("OPTIONS", {}).get("timeout", 30),
         }
 
     @async_unsafe
     def get_new_connection(self, conn_params):
+        if conn_params["is_local"]:
+            conn = sqlite3.connect(
+                conn_params["filepath"],
+                check_same_thread=False,
+            )
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            return conn
         return TursoHTTPConnection(
             base_url=conn_params["url"],
             auth_token=conn_params["auth_token"],
@@ -319,28 +425,59 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     def create_cursor(self, name=None):
         if self.connection is None:
             raise RuntimeError("No connection established")
-        return TursoCursor(self.connection)
+        if isinstance(self.connection, TursoHTTPConnection):
+            return TursoCursor(self.connection)
+        return LocalSQLiteCursor(self.connection)
 
     def is_usable(self):
         if self.connection is None:
             return False
         try:
-            self.connection.request("/v1/execute", {"stmt": {"sql": "SELECT 1"}})
+            if isinstance(self.connection, TursoHTTPConnection):
+                self.connection.request("/v1/execute", {"stmt": {"sql": "SELECT 1"}})
+            else:
+                self.connection.execute("SELECT 1")
             return True
         except Exception:
             return False
 
     def _close(self):
-        pass
+        if self.connection is not None:
+            if isinstance(self.connection, TursoHTTPConnection):
+                # HTTP connections are stateless — nothing to close.
+                pass
+            else:
+                self.connection.close()
 
     def _set_autocommit(self, autocommit):
-        pass
+        # For local SQLite, setting isolation_level=None enables autocommit
+        # mode, while setting it to 'DEFERRED' starts implicit transactions.
+        if self.connection is not None and not isinstance(
+            self.connection, TursoHTTPConnection
+        ):
+            if autocommit:
+                self.connection.isolation_level = None
+            else:
+                self.connection.isolation_level = "DEFERRED"
+
+    def _start_transaction_under_autocommit(self):
+        """Start an explicit transaction while staying in autocommit mode."""
+        if self.connection is not None and not isinstance(
+            self.connection, TursoHTTPConnection
+        ):
+            self.connection.execute("BEGIN")
 
     def _commit(self):
-        pass
+        if self.connection is not None and not isinstance(
+            self.connection, TursoHTTPConnection
+        ):
+            self.connection.commit()
 
     def _rollback(self):
-        pass
+        if self.connection is not None and not isinstance(
+            self.connection, TursoHTTPConnection
+        ):
+            self.connection.rollback()
 
     def disable_constraint_checking(self):
         """Disable FK checks via PRAGMA. Returns True if successfully disabled."""
@@ -378,6 +515,10 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         return False
 
     def get_database_version(self):
+        if self.connection is not None and not isinstance(
+            self.connection, TursoHTTPConnection
+        ):
+            return sqlite3.sqlite_version_info[:3]
         with self.cursor() as cursor:
             cursor.execute("SELECT sqlite_version()")
             row = cursor.fetchone()

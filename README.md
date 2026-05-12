@@ -1,14 +1,16 @@
 # django-libsql-backend
 
-Django database backend for **[libSQL](https://libsql.org/)** and **[Turso](https://turso.tech/)** — SQLite-compatible, fully remote, zero local files.
+Django database backend for **[libSQL](https://libsql.org/)** and **[Turso](https://turso.tech/)** — supports both remote Turso databases over HTTP and local SQLite files.
 
-Communicates with remote libSQL/SQLite databases via Turso's HTTP REST API (Hrana protocol over HTTP). Modeled directly on Django's built-in SQLite backend so that the ORM, migrations, admin, authentication, and most SQLite-compatible features work with little to no modification.
+Drop-in replacement for Django's built-in SQLite backend. Use a local `.sqlite3` file during development, then switch to a production Turso URL with zero code changes — same ENGINE, same ORM, same migrations.
 
 ---
 
 ## Features
 
-- **100% remote** — no local SQLite files, no file locks, no `sqlite3` module needed on the server
+- **Dual-mode** — auto-detects local file paths vs remote URLs from the `NAME` setting
+- **100% remote when you need it** — no local SQLite files, no file locks, no persistent connections
+- **Full local when you need it** — real transactions, WAL mode, FK enforcement
 - **SQLite-compatible** — delegates to Django's built-in SQLite schema editor and introspection
 - **Migrations** — `makemigrations`, `migrate`, `sqlmigrate` work as expected
 - **ORM** — full queryset API, aggregations, annotations, `ON CONFLICT` (upsert)
@@ -69,11 +71,15 @@ DATABASES = {
 
 `NAME` accepts any of these forms:
 
-| Form | Example |
-|---|---|
-| Full HTTPS URL | `https://my-db-org.turso.io` |
-| Bare hostname | `my-db-org.turso.io` |
-| `libsql://` URL | `libsql://my-db-org.turso.io` |
+| Form | Example | Connection type |
+|---|---|---|
+| Full HTTPS URL | `https://my-db-org.turso.io` | Remote (Turso HTTP) |
+| Bare hostname | `my-db-org.turso.io` | Remote (Turso HTTP) |
+| `libsql://` URL | `libsql://my-db-org.turso.io` | Remote (converted to HTTPS) |
+| Absolute file path | `/var/data/db.sqlite3` | Local (sqlite3) |
+| Relative file path | `./local_dev.db` | Local (sqlite3) |
+| Bare filename | `db.sqlite3` | Local (sqlite3) |
+| In-memory | `:memory:` | Local (sqlite3)
 
 ### 3. Run migrations
 
@@ -83,6 +89,21 @@ python manage.py migrate
 
 That's it. Django is now running against your remote Turso database.
 
+### Local development workflow
+
+During local development, just point `NAME` at a file path — no Turso account needed:
+
+```python
+DATABASES = {
+    "default": {
+        "ENGINE": "django_libsql",
+        "NAME": "dev.sqlite3",
+    }
+}
+```
+
+Run `python manage.py migrate` and you're developing locally with full SQLite transaction support, WAL mode, and FK enforcement. When you're ready to deploy, change `NAME` to your Turso URL and add the `AUTH_TOKEN` — that's the only change needed.
+
 ---
 
 ## Configuration Reference
@@ -90,9 +111,9 @@ That's it. Django is now running against your remote Turso database.
 | Setting | Required | Default | Description |
 |---|---|---|---|
 | `ENGINE` | Yes | — | `"django_libsql"` |
-| `NAME` | Yes | — | Database URL or hostname |
-| `AUTH_TOKEN` | Yes | `""` | Turso platform auth token (JWT) |
-| `OPTIONS.timeout` | No | `30` | HTTP request timeout in seconds |
+| `NAME` | Yes | — | Database URL, hostname, or local file path |
+| `AUTH_TOKEN` | Remote only | `""` | Turso platform auth token (JWT) |
+| `OPTIONS.timeout` | No | `30` | HTTP request timeout in seconds (remote only) |
 
 ### Environment variables
 
@@ -124,15 +145,15 @@ DATABASES = {
 
 ### How it differs from Django's built-in SQLite backend
 
-| | Django SQLite | django-libsql-backend |
-|---|---|---|
-| **Transport** | Local file I/O | HTTP REST API |
-| **Connection** | Persistent `sqlite3.Connection` | Stateless — each request = new SQLite connection |
-| **Transactions** | Real SQLite transactions | Each statement auto-commits independently |
-| **Savepoints** | Supported | Not supported (no persistent connection) |
-| **PRAGMAs** | Persistent per connection | Reset every HTTP request |
-| **File locking** | Yes (`sqlite3_busy_timeout`) | None — Turso handles concurrency server-side |
-| **Schema changes** | `_remake_table` (table rebuild) | Same approach, but each DDL is its own HTTP call |
+| | Django SQLite | django-libsql-backend (local) | django-libsql-backend (remote) |
+|---|---|---|---|---|
+| **Transport** | Local file I/O | Local file I/O | HTTP REST API |
+| **Connection** | Persistent `sqlite3.Connection` | Persistent `sqlite3.Connection` | Stateless — each request = new connection |
+| **Transactions** | Real SQLite transactions | Real SQLite transactions | Each statement auto-commits independently |
+| **Savepoints** | Supported | Supported | Not supported |
+| **PRAGMAs** | Persistent per connection | Persistent per connection | Reset every HTTP request |
+| **File locking** | Yes | Yes | None — Turso handles concurrency |
+| **Schema changes** | `_remake_table` | `_remake_table` | Same, each DDL is its own HTTP call |
 
 ### Internal module layout
 
@@ -179,6 +200,8 @@ All standard Django model fields are supported with correct SQLite column types:
 
 ## Known Limitations
 
+These apply only to **remote** (Turso HTTP) mode. Local mode has full SQLite transaction support.
+
 ### Stateless HTTP connection
 
 Each Turso HTTP request creates a new SQLite connection. This means:
@@ -197,10 +220,6 @@ If you need multi-statement atomicity, consider:
 ### Foreign key constraints
 
 Since FK pragmas don't persist, the schema editor bypasses Django's FK-disabling requirement. This works for **creating new tables** (the common path during initial `migrate`). If you later use `ALTER TABLE` operations that rebuild tables, Turso handles the DDL isolation server-side.
-
-### No local fallback
-
-This backend only supports remote databases via HTTP. If you need a local SQLite file for development or testing, use Django's built-in `django.db.backends.sqlite3` instead.
 
 ---
 
