@@ -227,7 +227,7 @@ Since FK pragmas don't persist, the schema editor bypasses Django's FK-disabling
 
 ```bash
 # Clone the repo
-git clone https://github.com/sinescode/django-libsql-backend.git
+git clone https://github.com/CyberCalculus/django-libsql-backend.git
 cd django-libsql-backend
 
 # Install in development mode
