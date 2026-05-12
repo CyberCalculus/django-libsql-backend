@@ -10,7 +10,6 @@ Connection type is auto-detected from the `NAME` setting in `DATABASES`.
 - **Repo**: `git@github.com-second:CyberCalculus/django-libsql-backend.git`
 - **PyPI**: https://pypi.org/project/django-libsql-backend/0.1.0/
 - **Install**: `pip install django-libsql-backend`
-- **SSH**: Uses `github.com-second` host alias → `~/.ssh/id_ed25519_github2` (CyberCalculus account)
 
 ## Build & Publish
 
