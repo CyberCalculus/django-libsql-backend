@@ -25,18 +25,26 @@ class DatabaseSchemaEditor:
         return getattr(self._wrapped, name)
 
     def __enter__(self):
-        # Skip SQLite's FK-constraint-disabled check. Turso HTTP is stateless:
-        # each request is an independent connection, so PRAGMA foreign_keys=OFF
-        # on one request has no effect on the next. We bypass the base schema
-        # editor's __enter__ entirely and go straight to its parent.
-        from django.db.backends.base.schema import BaseDatabaseSchemaEditor
+        from .base import _is_local_name
 
-        return BaseDatabaseSchemaEditor.__enter__(self._wrapped)
+        if not _is_local_name(self.connection.settings_dict.get("NAME", "")):
+            # Remote: skip FK constraint toggling — PRAGMAs don't persist across
+            # stateless HTTP requests. Go straight to the base class.
+            from django.db.backends.base.schema import BaseDatabaseSchemaEditor
+
+            return BaseDatabaseSchemaEditor.__enter__(self._wrapped)
+
+        # Local: let Django's SQLite schema editor manage FK constraints.
+        return self._wrapped.__enter__()
 
     def __exit__(self, *args):
-        # Skip check_constraints() and enable_constraint_checking() — they
-        # would run on new HTTP connections, not the connections that executed
-        # the schema changes.
-        from django.db.backends.base.schema import BaseDatabaseSchemaEditor
+        from .base import _is_local_name
 
-        return BaseDatabaseSchemaEditor.__exit__(self._wrapped, *args)
+        if not _is_local_name(self.connection.settings_dict.get("NAME", "")):
+            # Remote: skip check_constraints() / enable_constraint_checking().
+            from django.db.backends.base.schema import BaseDatabaseSchemaEditor
+
+            return BaseDatabaseSchemaEditor.__exit__(self._wrapped, *args)
+
+        # Local: let Django's SQLite schema editor run its exit logic.
+        return self._wrapped.__exit__(*args)

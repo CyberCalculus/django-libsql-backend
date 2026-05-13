@@ -149,8 +149,11 @@ DATABASES = {
 |---|---|---|---|---|
 | **Transport** | Local file I/O | Local file I/O | HTTP REST API |
 | **Connection** | Persistent `sqlite3.Connection` | Persistent `sqlite3.Connection` | Stateless — each request = new connection |
-| **Transactions** | Real SQLite transactions | Real SQLite transactions | Each statement auto-commits independently |
-| **Savepoints** | Supported | Supported | Not supported |
+| **Transactions** | Real SQLite transactions | Real SQLite transactions | Buffered writes flushed as batch on commit; rollback may not recover flushed writes |
+| **Savepoints** | Supported | Supported | Client-side buffer snapshots only (no server-side SAVEPOINT) |
+| **DDL rollback** | Supported | Supported | Not supported — each DDL auto-commits |
+| **FK deferral** | Supported | Supported | Not supported — needs persistent PRAGMA state |
+| **INSERT...RETURNING** | Supported (3.35+) | Supported (3.35+) | Not used — would bypass write buffering; `lastrowid` used instead |
 | **PRAGMAs** | Persistent per connection | Persistent per connection | Reset every HTTP request |
 | **File locking** | Yes | Yes | None — Turso handles concurrency |
 | **Schema changes** | `_remake_table` | `_remake_table` | Same, each DDL is its own HTTP call |
@@ -206,20 +209,36 @@ These apply only to **remote** (Turso HTTP) mode. Local mode has full SQLite tra
 
 Each Turso HTTP request creates a new SQLite connection. This means:
 
-- **`PRAGMA` settings do not persist** between requests. `PRAGMA foreign_keys = OFF` in request A does not affect request B.
-- **`SET` / transaction state** is not shared across calls.
+- **`PRAGMA` settings do not persist** between requests.
+- **DDL cannot be rolled back** — each schema change auto-commits immediately.
+- **FK constraint checks cannot be deferred** — needs persistent connection state.
 
 ### Transactions
 
-`commit()`, `rollback()`, `savepoints`, and `atomic()` blocks are **no-ops** — each SQL statement is its own auto-committed transaction over HTTP. For most web applications this is acceptable because Django's default autocommit mode already wraps each request in a single implicit transaction.
+Remote mode uses **client-side write buffering** for best-effort atomicity:
+- Writes inside `atomic()` blocks are buffered in memory
+- On commit (outermost `atomic` exit), all buffered writes are flushed as a single batch request
+- Reading inside a transaction auto-flushes buffered writes first (read-your-writes)
+- Accessing `cursor.lastrowid` also triggers a flush
+- Once flushed, writes cannot be rolled back — rollback raises `DatabaseError`
 
-If you need multi-statement atomicity, consider:
-- Using Turso's batch API (the backend uses it automatically for `executemany()`)
-- Calling a server-side function that groups statements
+Savepoints are client-side buffer snapshots — they track buffer length but don't send `SAVEPOINT` SQL to the server. Rolling back to a savepoint truncates the buffer; releasing is a no-op.
 
-### Foreign key constraints
+### SQL function availability
 
-Since FK pragmas don't persist, the schema editor bypasses Django's FK-disabling requirement. This works for **creating new tables** (the common path during initial `migrate`). If you later use `ALTER TABLE` operations that rebuild tables, Turso handles the DDL isolation server-side.
+These Django ORM functions use Python-registered SQL functions that are **not available** on remote servers:
+- **Hash**: `MD5`, `SHA1`, `SHA224`, `SHA256`, `SHA384`, `SHA512`
+- **String**: `LPad`, `RPad`, `Repeat`, `Reverse`
+- **Math**: `Cot`, `Sign`, `BitXor` (raises `NotSupportedError`)
+- **Aggregate**: `StdDev`, `Variance` (raise `NotSupportedError`)
+
+### Timezone handling
+
+SQLite has no native timezone support. In remote mode, all date/time SQL is generated using `strftime`/`date`/`time` without timezone conversion. Results are correct when the database stores UTC (Django's default). Queries involving non-UTC timezone conversion may produce incorrect results.
+
+### Schema migrations
+
+`_remake_table` (used by `ALTER TABLE` operations) may fail for tables referenced by foreign keys due to the stateless PRAGMA issue. Most `makemigrations`/`migrate` operations work correctly for the common path of creating new tables and adding columns.
 
 ---
 

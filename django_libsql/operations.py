@@ -11,6 +11,7 @@ from django.core.exceptions import FieldError
 from django.db import DatabaseError, NotSupportedError, models
 from django.db.backends.base.operations import BaseDatabaseOperations
 from django.db.models.constants import OnConflict
+from django.db.models import CompositePrimaryKey
 from django.db.models.expressions import Col
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
@@ -18,6 +19,8 @@ from django.utils.functional import cached_property
 
 
 class DatabaseOperations(BaseDatabaseOperations):
+    """SQL generation for local sqlite3 mode (uses Django-registered functions)."""
+
     cast_char_field_without_max_length = "text"
     cast_data_types = {
         "DateField": "TEXT",
@@ -27,13 +30,16 @@ class DatabaseOperations(BaseDatabaseOperations):
     jsonfield_datatype_values = frozenset(["null", "false", "true"])
 
     def bulk_batch_size(self, fields, objs):
-        max_params = 999
-        if len(fields) == 1:
-            return 500
-        elif len(fields) > 1:
-            return max_params // len(fields)
-        else:
-            return len(objs)
+        django_fields = []
+        for field in fields:
+            if isinstance(field, CompositePrimaryKey):
+                django_fields.extend(field.get_cols())
+            else:
+                django_fields.append(field)
+        max_params = self.connection.features.max_query_params or 999
+        if django_fields:
+            return max(max_params // len(django_fields), 1)
+        return len(objs)
 
     def check_expression_support(self, expression):
         bad_fields = (models.DateField, models.DateTimeField, models.TimeField)
@@ -126,7 +132,19 @@ class DatabaseOperations(BaseDatabaseOperations):
         return -1
 
     def last_executed_query(self, cursor, sql, params):
-        return sql % params if params else sql
+        if not params:
+            return sql
+        if isinstance(params, (list, tuple)):
+            quoted = []
+            for p in params:
+                if p is None:
+                    quoted.append("NULL")
+                elif isinstance(p, (int, float)):
+                    quoted.append(str(p))
+                else:
+                    quoted.append(repr(str(p)))
+            return sql % tuple(quoted)
+        return sql % {k: repr(str(v)) if v is not None else "NULL" for k, v in params.items()}
 
     def __references_graph(self, table_name):
         query = """
@@ -337,5 +355,286 @@ class DatabaseOperations(BaseDatabaseOperations):
             unique_fields,
         )
 
+    @cached_property
     def force_group_by(self):
+        if self.connection.get_database_version() < (3, 39, 0):
+            return ["GROUP BY TRUE"]
         return []
+
+    def format_json_path_numeric_index(self, index):
+        if isinstance(index, int) and index < 0:
+            return "[#%s]" % index
+        return super().format_json_path_numeric_index(index)
+
+
+class RemoteDatabaseOperations(DatabaseOperations):
+    """
+    SQL generation for remote (Turso HTTP) mode.
+
+    Django's SQLite backend registers Python functions (django_date_extract,
+    django_date_trunc, django_datetime_extract, etc.) on the sqlite3 connection
+    object. On Turso's remote HTTP API, we cannot register Python functions —
+    each request is a stateless SQLite connection on the server.
+
+    This class overrides the SQL generators to use only native SQLite built-in
+    functions (strftime, date, time, julianday) instead of Django custom
+    functions. The generated SQL is valid on any standard SQLite 3.31+ server.
+
+    Timezone conversion is NOT performed at the SQL level — SQLite has no
+    timezone support. This means datetime lookups are correct when:
+      - USE_TZ=False (naive datetimes)
+      - USE_TZ=True with the database storing UTC (Django's default)
+    Incorrect results may occur if the database stores non-UTC naive datetimes
+    and the query involves timezone conversion.
+
+    Limitations in remote mode:
+      - REGEXP may not work on all Turso/libSQL servers (requires the
+        regexp extension to be loaded on the server side).
+      - STDDEV_POP, STDDEV_SAMP, VAR_POP, VAR_SAMP aggregate functions are
+        not available. Use of StdDev/Variance aggregates will raise
+        NotSupportedError.
+    """
+
+    def check_expression_support(self, expression):
+        bad_aggregates = (models.StdDev, models.Variance)
+        if isinstance(expression, bad_aggregates):
+            raise NotSupportedError(
+                "StdDev and Variance aggregates are not supported in remote "
+                "(Turso HTTP) mode. These SQL functions (STDDEV_SAMP, VAR_SAMP, "
+                "STDDEV_POP, VAR_POP) are not available on all Turso/libSQL "
+                "servers."
+            )
+        super().check_expression_support(expression)
+
+    # strftime format strings for date_extract lookup types.
+    # Lookups with custom formulas are handled directly in the *extract methods.
+    _DATE_EXTRACT_FORMATS = {
+        "year": "%Y",
+        "month": "%m",
+        "day": "%d",
+        "iso_year": "%G",
+    }
+
+    _DATETIME_EXTRACT_FORMATS = {
+        **_DATE_EXTRACT_FORMATS,
+        "hour": "%H",
+        "minute": "%M",
+    }
+
+    def date_extract_sql(self, lookup_type, sql, params):
+        lt = lookup_type.lower()
+        if lt == "quarter":
+            return (
+                "(CAST(strftime('%%m', %s) AS integer) + 2) / 3" % sql,
+                params,
+            )
+        if lt == "week_day":
+            return (
+                "CAST(strftime('%%w', %s) AS integer) + 1" % sql,
+                params,
+            )
+        if lt == "iso_week_day":
+            return (
+                "CAST(strftime('%%u', %s) AS integer)" % sql,
+                params,
+            )
+        if lt == "week":
+            return (
+                "CAST((strftime('%%j', %s, '-3 days', 'weekday 4') - 1) / 7 + 1 "
+                "AS integer)" % sql,
+                params,
+            )
+        fmt = self._DATE_EXTRACT_FORMATS.get(lt)
+        if fmt:
+            return (
+                "CAST(strftime('%s', %s) AS integer)" % (fmt, sql),
+                params,
+            )
+        raise NotSupportedError(
+            "Date extract '%s' is not supported in remote mode." % lt
+        )
+
+    def datetime_extract_sql(self, lookup_type, sql, params, tzname):
+        lt = lookup_type.lower()
+        if lt == "quarter":
+            return (
+                "(CAST(strftime('%%m', %s) AS integer) + 2) / 3" % sql,
+                params,
+            )
+        if lt == "week_day":
+            return (
+                "CAST(strftime('%%w', %s) AS integer) + 1" % sql,
+                params,
+            )
+        if lt == "iso_week_day":
+            return (
+                "CAST(strftime('%%u', %s) AS integer)" % sql,
+                params,
+            )
+        if lt == "week":
+            return (
+                "CAST((strftime('%%j', %s, '-3 days', 'weekday 4') - 1) / 7 + 1 "
+                "AS integer)" % sql,
+                params,
+            )
+        if lt == "second":
+            return (
+                "CAST(strftime('%%S', %s) AS integer)" % sql,
+                params,
+            )
+        fmt = self._DATETIME_EXTRACT_FORMATS.get(lt)
+        if fmt:
+            return (
+                "CAST(strftime('%s', %s) AS integer)" % (fmt, sql),
+                params,
+            )
+        raise NotSupportedError(
+            "Datetime extract '%s' is not supported in remote mode." % lt
+        )
+
+    def time_extract_sql(self, lookup_type, sql, params):
+        lt = lookup_type.lower()
+        if lt == "second":
+            return (
+                "CAST(strftime('%%S', %s) AS integer)" % sql,
+                params,
+            )
+        fmt = {"hour": "%H", "minute": "%M"}.get(lt)
+        if fmt:
+            return (
+                "CAST(strftime('%s', %s) AS integer)" % (fmt, sql),
+                params,
+            )
+        raise NotSupportedError(
+            "Time extract '%s' is not supported in remote mode." % lt
+        )
+
+    def date_trunc_sql(self, lookup_type, sql, params, tzname=None):
+        lt = lookup_type.lower()
+        if lt == "year":
+            return "strftime('%%Y-01-01', %s)" % sql, params
+        elif lt == "month":
+            return "strftime('%%Y-%%m-01', %s)" % sql, params
+        elif lt == "day":
+            return "strftime('%%Y-%%m-%%d', %s)" % sql, params
+        elif lt == "quarter":
+            # Quarter start: month = ((m - 1) / 3) * 3 + 1
+            return (
+                "strftime('%%Y', %(col)s) || '-' || "
+                "SUBSTR('0' || ((CAST(strftime('%%m', %(col)s) AS integer) - 1) "
+                "/ 3 * 3 + 1), -2) || '-01'"
+            ) % {"col": sql}, params
+        elif lt == "week":
+            # Monday of the current week: date(col, '-N days')
+            # N = (strftime('%w', col) + 6) %% 7
+            return (
+                "date(%(col)s, '-' || "
+                "((CAST(strftime('%%w', %(col)s) AS integer) + 6) %% 7) || "
+                "' days')"
+            ) % {"col": sql}, params
+        raise NotSupportedError(
+            "Date trunc '%s' is not supported in remote mode." % lt
+        )
+
+    def datetime_trunc_sql(self, lookup_type, sql, params, tzname=None):
+        lt = lookup_type.lower()
+        fmts = {
+            "year": "%%Y-01-01 00:00:00",
+            "quarter": None,  # handled separately
+            "month": "%%Y-%%m-01 00:00:00",
+            "week": None,     # handled separately
+            "day": "%%Y-%%m-%%d 00:00:00",
+            "hour": "%%Y-%%m-%%d %%H:00:00",
+            "minute": "%%Y-%%m-%%d %%H:%%M:00",
+            "second": "%%Y-%%m-%%d %%H:%%M:%%S",
+        }
+        if lt == "quarter":
+            return (
+                "strftime('%%Y', %(col)s) || '-' || "
+                "SUBSTR('0' || ((CAST(strftime('%%m', %(col)s) AS integer) - 1) "
+                "/ 3 * 3 + 1), -2) || '-01 00:00:00'"
+            ) % {"col": sql}, params
+        if lt == "week":
+            return (
+                "strftime('%%Y-%%m-%%d 00:00:00', "
+                "date(%(col)s, '-' || "
+                "((CAST(strftime('%%w', %(col)s) AS integer) + 6) %% 7) || "
+                "' days'))"
+            ) % {"col": sql}, params
+        fmt = fmts.get(lt)
+        if fmt:
+            return "strftime('%s', %s)" % (fmt, sql), params
+        raise NotSupportedError(
+            "Datetime trunc '%s' is not supported in remote mode." % lt
+        )
+
+    def time_trunc_sql(self, lookup_type, sql, params, tzname=None):
+        lt = lookup_type.lower()
+        fmts = {
+            "hour": "%%H:00:00",
+            "minute": "%%H:%%M:00",
+            "second": "%%H:%%M:%%S",
+        }
+        fmt = fmts.get(lt)
+        if fmt:
+            return "strftime('%s', %s)" % (fmt, sql), params
+        raise NotSupportedError(
+            "Time trunc '%s' is not supported in remote mode." % lt
+        )
+
+    def datetime_cast_date_sql(self, sql, params, tzname):
+        return "date(%s)" % sql, params
+
+    def datetime_cast_time_sql(self, sql, params, tzname):
+        return "time(%s)" % sql, params
+
+    def subtract_temporals(self, internal_type, lhs, rhs):
+        lhs_sql, lhs_params = lhs
+        rhs_sql, rhs_params = rhs
+        params = (*lhs_params, *rhs_params)
+        if internal_type == "TimeField":
+            # (julianday('2000-01-01 ' || lhs) - julianday('2000-01-01 ' || rhs))
+            # * 86400000000 → microseconds
+            return (
+                "(julianday('2000-01-01 ' || %s) - "
+                "julianday('2000-01-01 ' || %s)) * 86400000000"
+            ) % (lhs_sql, rhs_sql), params
+        # timestamp_diff: (julianday(lhs) - julianday(rhs)) * 86400000000
+        return (
+            "(julianday(%s) - julianday(%s)) * 86400000000"
+        ) % (lhs_sql, rhs_sql), params
+
+    def combine_expression(self, connector, sub_expressions):
+        if connector == "#":
+            raise NotSupportedError(
+                "BITXOR is not available in remote (Turso HTTP) mode."
+            )
+        return super().combine_expression(connector, sub_expressions)
+
+    def combine_duration_expression(self, connector, sub_expressions):
+        # django_format_dtdelta doesn't exist on remote servers.
+        # Provide a fallback using native SQLite datetime() for +/- and raw
+        # arithmetic for */.
+        #
+        # Limitation: timedelta + timedelta (both DurationField values) uses the
+        # same code path. datetime() interprets the first integer as a Julian
+        # day number, producing a date string instead of an integer. Use
+        # explicit integer arithmetic (F('a') + F('b') as a regular expression,
+        # not a duration expression) when combining two DurationField values.
+        if connector not in ["+", "-", "*", "/"]:
+            raise DatabaseError("Invalid connector for timedelta: %s." % connector)
+        if len(sub_expressions) > 2:
+            raise ValueError("Too many params for timedelta operations.")
+        lhs, rhs = sub_expressions
+        if connector == "+":
+            return (
+                "datetime(%s, '+' || (%s) / 1000000.0 || ' seconds')"
+            ) % (lhs, rhs)
+        elif connector == "-":
+            return (
+                "datetime(%s, '-' || (%s) / 1000000.0 || ' seconds')"
+            ) % (lhs, rhs)
+        elif connector == "*":
+            return "(%s) * (%s)" % (lhs, rhs)
+        else:
+            return "(%s) / (%s)" % (lhs, rhs)

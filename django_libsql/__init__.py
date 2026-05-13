@@ -21,7 +21,7 @@ The ``NAME`` can be a full URL (``https://db-name.turso.io``) or a bare
 hostname (``db-name.turso.io``) — ``https://`` is prepended automatically.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .base import DatabaseWrapper
 
