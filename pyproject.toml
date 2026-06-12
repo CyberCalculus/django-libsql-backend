@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-libsql-backend"
-version = "0.1.1"
+version = "0.1.2"
 description = "Django database backend for libSQL/Turso — SQLite-compatible remote databases over HTTP"
 readme = "README.md"
 license = "MIT"
@@ -24,6 +24,7 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: Django",
+    "Framework :: Django :: 4.2",
     "Framework :: Django :: 5.0",
     "Framework :: Django :: 5.1",
     "Framework :: Django :: 6.0",
@@ -47,6 +48,16 @@ dependencies = [
 Homepage = "https://github.com/CyberCalculus/django-libsql-backend"
 Repository = "https://github.com/CyberCalculus/django-libsql-backend"
 Issues = "https://github.com/CyberCalculus/django-libsql-backend/issues"
+Documentation = "https://github.com/CyberCalculus/django-libsql-backend/tree/main/docs"
+Changelog = "https://github.com/CyberCalculus/django-libsql-backend/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = ["django_libsql"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

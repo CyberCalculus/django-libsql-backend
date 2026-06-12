@@ -1,7 +1,10 @@
-"""Operations for the libSQL/Turso backend — SQLite-compatible SQL generation."""
+"""Operations for the libSQL/Turso backend -- SQLite-compatible SQL generation."""
+
+from __future__ import annotations
 
 import datetime
 import decimal
+import re
 import uuid
 from functools import lru_cache
 from itertools import chain
@@ -10,6 +13,18 @@ from django.conf import settings
 from django.core.exceptions import FieldError
 from django.db import DatabaseError, NotSupportedError, models
 from django.db.backends.base.operations import BaseDatabaseOperations
+
+try:
+    from django.db.models.functions.text import (
+        MD5, SHA1, SHA224, SHA256, SHA384, SHA512,
+        LPad, RPad, Repeat, Reverse,
+    )
+    _UNSUPPORTED_TEXT_FUNCTIONS = (
+        MD5, SHA1, SHA224, SHA256, SHA384, SHA512,
+        LPad, RPad, Repeat, Reverse,
+    )
+except ImportError:
+    _UNSUPPORTED_TEXT_FUNCTIONS = ()
 from django.db.models.constants import OnConflict
 from django.db.models import CompositePrimaryKey
 from django.db.models.expressions import Col
@@ -143,7 +158,12 @@ class DatabaseOperations(BaseDatabaseOperations):
                     quoted.append(str(p))
                 else:
                     quoted.append(repr(str(p)))
-            return sql % tuple(quoted)
+            # Use regex to replace %s placeholders, not Python % formatting,
+            # to avoid conflicts with % characters in SQL (e.g. strftime).
+            result = sql
+            for q in quoted:
+                result = result.replace("%s", q, 1)
+            return result
         return sql % {k: repr(str(v)) if v is not None else "NULL" for k, v in params.items()}
 
     def __references_graph(self, table_name):
@@ -210,8 +230,6 @@ class DatabaseOperations(BaseDatabaseOperations):
     def adapt_datetimefield_value(self, value):
         if value is None:
             return None
-        if hasattr(value, "resolve_expression"):
-            return value
         if timezone.is_aware(value):
             if settings.USE_TZ:
                 value = timezone.make_naive(value, self.connection.timezone)
@@ -225,8 +243,6 @@ class DatabaseOperations(BaseDatabaseOperations):
     def adapt_timefield_value(self, value):
         if value is None:
             return None
-        if hasattr(value, "resolve_expression"):
-            return value
         if timezone.is_aware(value):
             raise ValueError("SQLite does not support timezone-aware times.")
         return str(value)
@@ -362,9 +378,7 @@ class DatabaseOperations(BaseDatabaseOperations):
         return []
 
     def format_json_path_numeric_index(self, index):
-        if isinstance(index, int) and index < 0:
-            return "[#%s]" % index
-        return super().format_json_path_numeric_index(index)
+        return "[#%s]" % index if index < 0 else super().format_json_path_numeric_index(index)
 
 
 class RemoteDatabaseOperations(DatabaseOperations):
@@ -404,7 +418,38 @@ class RemoteDatabaseOperations(DatabaseOperations):
                 "STDDEV_POP, VAR_POP) are not available on all Turso/libSQL "
                 "servers."
             )
+        if isinstance(expression, _UNSUPPORTED_TEXT_FUNCTIONS):
+            raise NotSupportedError(
+                f"{expression.__class__.__name__} is not supported in remote "
+                f"(Turso HTTP/libSQL) mode. This function requires Python "
+                f"function registration which is unavailable on remote servers. "
+                f"Consider computing the value in Python before passing it to "
+                f"the query, or use a native SQLite expression."
+            )
         super().check_expression_support(expression)
+
+    # SQL rewrite patterns applied before sending queries to remote servers.
+    # Each pattern is a (regex, replacement) tuple.
+    _SQL_REWRITE_PATTERNS = [
+        # COT(x) → (1.0 / TAN(x))
+        (re.compile(r"\bCOT\s*\(", re.IGNORECASE), "(1.0 / TAN("),
+        # SIGN(x) → CASE WHEN x > 0 THEN 1 WHEN x < 0 THEN -1 ELSE 0 END
+        # Applied for single-argument SIGN calls.
+        (re.compile(r"\bSIGN\s*\(([^()]*)\)", re.IGNORECASE),
+         r"CASE WHEN \1 > 0 THEN 1 WHEN \1 < 0 THEN -1 ELSE 0 END"),
+    ]
+
+    @staticmethod
+    def rewrite_sql_for_remote(sql):
+        """Apply SQL function rewrites for remote servers.
+
+        Transforms SQL functions that require Python registration into
+        equivalent pure-SQL expressions. Called by the cursor before
+        sending queries to the remote server.
+        """
+        for pattern, replacement in RemoteDatabaseOperations._SQL_REWRITE_PATTERNS:
+            sql = pattern.sub(replacement, sql)
+        return sql
 
     # strftime format strings for date_extract lookup types.
     # Lookups with custom formulas are handled directly in the *extract methods.
@@ -421,146 +466,109 @@ class RemoteDatabaseOperations(DatabaseOperations):
         "minute": "%M",
     }
 
-    def date_extract_sql(self, lookup_type, sql, params):
-        lt = lookup_type.lower()
-        if lt == "quarter":
-            return (
-                "(CAST(strftime('%%m', %s) AS integer) + 2) / 3" % sql,
-                params,
-            )
-        if lt == "week_day":
-            return (
-                "CAST(strftime('%%w', %s) AS integer) + 1" % sql,
-                params,
-            )
-        if lt == "iso_week_day":
-            return (
-                "CAST(strftime('%%u', %s) AS integer)" % sql,
-                params,
-            )
-        if lt == "week":
+    @staticmethod
+    def _common_extract_sql(lookup_type, sql):
+        """Return SQL for extract lookups shared by date/datetime/time."""
+        if lookup_type == "quarter":
+            return "(CAST(strftime('%%m', %s) AS integer) + 2) / 3" % sql
+        if lookup_type == "week_day":
+            return "CAST(strftime('%%w', %s) AS integer) + 1" % sql
+        if lookup_type == "iso_week_day":
+            return "CAST(strftime('%%u', %s) AS integer)" % sql
+        if lookup_type == "week":
             return (
                 "CAST((strftime('%%j', %s, '-3 days', 'weekday 4') - 1) / 7 + 1 "
-                "AS integer)" % sql,
-                params,
+                "AS integer)" % sql
             )
+        if lookup_type == "second":
+            return "CAST(strftime('%%S', %s) AS integer)" % sql
+        return None
+
+    def date_extract_sql(self, lookup_type, sql, params):
+        lt = lookup_type.lower()
+        result = self._common_extract_sql(lt, sql)
+        if result is not None:
+            return result, params
         fmt = self._DATE_EXTRACT_FORMATS.get(lt)
         if fmt:
-            return (
-                "CAST(strftime('%s', %s) AS integer)" % (fmt, sql),
-                params,
-            )
+            return "CAST(strftime('%s', %s) AS integer)" % (fmt, sql), params
         raise NotSupportedError(
             "Date extract '%s' is not supported in remote mode." % lt
         )
 
     def datetime_extract_sql(self, lookup_type, sql, params, tzname):
         lt = lookup_type.lower()
-        if lt == "quarter":
-            return (
-                "(CAST(strftime('%%m', %s) AS integer) + 2) / 3" % sql,
-                params,
-            )
-        if lt == "week_day":
-            return (
-                "CAST(strftime('%%w', %s) AS integer) + 1" % sql,
-                params,
-            )
-        if lt == "iso_week_day":
-            return (
-                "CAST(strftime('%%u', %s) AS integer)" % sql,
-                params,
-            )
-        if lt == "week":
-            return (
-                "CAST((strftime('%%j', %s, '-3 days', 'weekday 4') - 1) / 7 + 1 "
-                "AS integer)" % sql,
-                params,
-            )
-        if lt == "second":
-            return (
-                "CAST(strftime('%%S', %s) AS integer)" % sql,
-                params,
-            )
+        result = self._common_extract_sql(lt, sql)
+        if result is not None:
+            return result, params
         fmt = self._DATETIME_EXTRACT_FORMATS.get(lt)
         if fmt:
-            return (
-                "CAST(strftime('%s', %s) AS integer)" % (fmt, sql),
-                params,
-            )
+            return "CAST(strftime('%s', %s) AS integer)" % (fmt, sql), params
         raise NotSupportedError(
             "Datetime extract '%s' is not supported in remote mode." % lt
         )
 
     def time_extract_sql(self, lookup_type, sql, params):
         lt = lookup_type.lower()
-        if lt == "second":
-            return (
-                "CAST(strftime('%%S', %s) AS integer)" % sql,
-                params,
-            )
-        fmt = {"hour": "%H", "minute": "%M"}.get(lt)
+        result = self._common_extract_sql(lt, sql)
+        if result is not None:
+            return result, params
+        fmt = {"hour": "%H", "minute": "%M", "second": "%S"}.get(lt)
         if fmt:
-            return (
-                "CAST(strftime('%s', %s) AS integer)" % (fmt, sql),
-                params,
-            )
+            return "CAST(strftime('%s', %s) AS integer)" % (fmt, sql), params
         raise NotSupportedError(
             "Time extract '%s' is not supported in remote mode." % lt
         )
+
+    @staticmethod
+    def _quarter_trunc_sql(sql, suffix=""):
+        """Return SQL for quarter truncation."""
+        return (
+            "strftime('%%Y', %(col)s) || '-' || "
+            "SUBSTR('0' || ((CAST(strftime('%%m', %(col)s) AS integer) - 1) "
+            "/ 3 * 3 + 1), -2) || '-01%(suffix)s'"
+        ) % {"col": sql, "suffix": suffix}
+
+    @staticmethod
+    def _week_trunc_sql(sql):
+        """Return SQL for week truncation (Monday start)."""
+        return (
+            "date(%(col)s, '-' || "
+            "((CAST(strftime('%%w', %(col)s) AS integer) + 6) %% 7) || "
+            "' days')"
+        ) % {"col": sql}
 
     def date_trunc_sql(self, lookup_type, sql, params, tzname=None):
         lt = lookup_type.lower()
         if lt == "year":
             return "strftime('%%Y-01-01', %s)" % sql, params
-        elif lt == "month":
+        if lt == "month":
             return "strftime('%%Y-%%m-01', %s)" % sql, params
-        elif lt == "day":
+        if lt == "day":
             return "strftime('%%Y-%%m-%%d', %s)" % sql, params
-        elif lt == "quarter":
-            # Quarter start: month = ((m - 1) / 3) * 3 + 1
-            return (
-                "strftime('%%Y', %(col)s) || '-' || "
-                "SUBSTR('0' || ((CAST(strftime('%%m', %(col)s) AS integer) - 1) "
-                "/ 3 * 3 + 1), -2) || '-01'"
-            ) % {"col": sql}, params
-        elif lt == "week":
-            # Monday of the current week: date(col, '-N days')
-            # N = (strftime('%w', col) + 6) %% 7
-            return (
-                "date(%(col)s, '-' || "
-                "((CAST(strftime('%%w', %(col)s) AS integer) + 6) %% 7) || "
-                "' days')"
-            ) % {"col": sql}, params
+        if lt == "quarter":
+            return self._quarter_trunc_sql(sql), params
+        if lt == "week":
+            return self._week_trunc_sql(sql), params
         raise NotSupportedError(
             "Date trunc '%s' is not supported in remote mode." % lt
         )
 
     def datetime_trunc_sql(self, lookup_type, sql, params, tzname=None):
         lt = lookup_type.lower()
+        if lt == "quarter":
+            return self._quarter_trunc_sql(sql, " 00:00:00"), params
+        if lt == "week":
+            week_sql = self._week_trunc_sql(sql)
+            return "strftime('%%Y-%%m-%%d 00:00:00', %s)" % week_sql, params
         fmts = {
             "year": "%%Y-01-01 00:00:00",
-            "quarter": None,  # handled separately
             "month": "%%Y-%%m-01 00:00:00",
-            "week": None,     # handled separately
             "day": "%%Y-%%m-%%d 00:00:00",
             "hour": "%%Y-%%m-%%d %%H:00:00",
             "minute": "%%Y-%%m-%%d %%H:%%M:00",
             "second": "%%Y-%%m-%%d %%H:%%M:%%S",
         }
-        if lt == "quarter":
-            return (
-                "strftime('%%Y', %(col)s) || '-' || "
-                "SUBSTR('0' || ((CAST(strftime('%%m', %(col)s) AS integer) - 1) "
-                "/ 3 * 3 + 1), -2) || '-01 00:00:00'"
-            ) % {"col": sql}, params
-        if lt == "week":
-            return (
-                "strftime('%%Y-%%m-%%d 00:00:00', "
-                "date(%(col)s, '-' || "
-                "((CAST(strftime('%%w', %(col)s) AS integer) + 6) %% 7) || "
-                "' days'))"
-            ) % {"col": sql}, params
         fmt = fmts.get(lt)
         if fmt:
             return "strftime('%s', %s)" % (fmt, sql), params

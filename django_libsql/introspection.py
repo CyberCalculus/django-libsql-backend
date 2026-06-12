@@ -5,6 +5,8 @@ Delegates to Django's built-in SQLite DatabaseIntrospection via lazy import
 to avoid circular import issues at module-load time.
 """
 
+from __future__ import annotations
+
 
 class DatabaseIntrospection:
     """Proxy that lazily imports SQLite's introspection on first use."""

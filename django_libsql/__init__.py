@@ -2,7 +2,8 @@
 Django database backend for libSQL/Turso.
 
 Provides a Django database backend that communicates with remote libSQL/SQLite
-databases via Turso's HTTP REST API (Hrana protocol over HTTP).
+databases via Turso's HTTP REST API (Hrana protocol over HTTP) or WebSocket
+(Hrana protocol), or uses local SQLite files.
 
 Usage in Django settings.py::
 
@@ -17,11 +18,14 @@ Usage in Django settings.py::
         }
     }
 
-The ``NAME`` can be a full URL (``https://db-name.turso.io``) or a bare
-hostname (``db-name.turso.io``) — ``https://`` is prepended automatically.
+The ``NAME`` can be a full URL (``https://db-name.turso.io``), a bare
+hostname (``db-name.turso.io``), a ``libsql://`` WebSocket URL, or a local
+file path.
 """
 
-__version__ = "0.1.1"
+from __future__ import annotations
+
+__version__ = "0.1.2"
 
 from .base import DatabaseWrapper
 

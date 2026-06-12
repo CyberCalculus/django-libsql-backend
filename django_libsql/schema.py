@@ -4,11 +4,13 @@ Schema editor for the libSQL/Turso backend.
 Delegates to Django's built-in SQLite DatabaseSchemaEditor via lazy import
 to avoid circular import issues at module-load time.
 
-Turso's HTTP API is stateless — each request is a separate SQLite connection.
+Turso's HTTP API is stateless -- each request is a separate SQLite connection.
 PRAGMA settings (like foreign_keys) do not persist across requests. Because of
 this, we override __enter__/__exit__ to skip FK constraint toggling, which
 would be meaningless across stateless HTTP calls anyway.
 """
+
+from __future__ import annotations
 
 
 class DatabaseSchemaEditor:
@@ -25,26 +27,30 @@ class DatabaseSchemaEditor:
         return getattr(self._wrapped, name)
 
     def __enter__(self):
-        from .base import _is_local_name
+        from .base import _get_connection_mode
 
-        if not _is_local_name(self.connection.settings_dict.get("NAME", "")):
-            # Remote: skip FK constraint toggling — PRAGMAs don't persist across
-            # stateless HTTP requests. Go straight to the base class.
+        mode = _get_connection_mode(self.connection.settings_dict.get("NAME", ""))
+        if mode == "http":
+            # Stateless HTTP: skip FK constraint toggling — PRAGMAs don't
+            # persist across requests. Go straight to the base class.
             from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
-            return BaseDatabaseSchemaEditor.__enter__(self._wrapped)
+            BaseDatabaseSchemaEditor.__enter__(self._wrapped)
+            return self  # return proxy, not the wrapped object
 
-        # Local: let Django's SQLite schema editor manage FK constraints.
+        # Local or Hrana: FK constraints persist on the connection, so
+        # Django's SQLite schema editor can manage them correctly.
         return self._wrapped.__enter__()
 
     def __exit__(self, *args):
-        from .base import _is_local_name
+        from .base import _get_connection_mode
 
-        if not _is_local_name(self.connection.settings_dict.get("NAME", "")):
-            # Remote: skip check_constraints() / enable_constraint_checking().
+        mode = _get_connection_mode(self.connection.settings_dict.get("NAME", ""))
+        if mode == "http":
+            # Stateless HTTP: skip check_constraints() / enable_constraint_checking().
             from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
             return BaseDatabaseSchemaEditor.__exit__(self._wrapped, *args)
 
-        # Local: let Django's SQLite schema editor run its exit logic.
+        # Local or Hrana: run full exit logic with constraint checking.
         return self._wrapped.__exit__(*args)

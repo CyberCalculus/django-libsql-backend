@@ -10,6 +10,15 @@ SQL queries that rely on them are rewritten to use native SQLite expressions
 in RemoteDatabaseOperations (see operations.py).
 """
 
-from django.db.backends.sqlite3._functions import register as register_functions
+from __future__ import annotations
+
+try:
+    from django.db.backends.sqlite3._functions import register as register_functions
+except ImportError:
+    raise ImportError(
+        "django_libsql requires Django's sqlite3._functions module. "
+        "This module may have moved or been removed in your Django version. "
+        "Please upgrade Django or report this issue."
+    ) from None
 
 __all__ = ["register_functions"]

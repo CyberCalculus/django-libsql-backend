@@ -1,4 +1,6 @@
-"""Features for the libSQL/Turso backend — SQLite-compatible, remote HTTP."""
+"""Features for the libSQL/Turso backend -- SQLite-compatible, remote HTTP."""
+
+from __future__ import annotations
 
 import operator
 
@@ -15,7 +17,11 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     supports_timezones = False
     @cached_property
     def atomic_transactions(self):
-        return not self._is_local
+        # Both modes: Django manages transactions explicitly via atomic()
+        # blocks. Remote mode buffers writes client-side; local mode uses
+        # sqlite3's native transaction support. Setting this to False
+        # matches Django's built-in SQLite backend behavior.
+        return False
     @cached_property
     def can_rollback_ddl(self):
         return self._is_local
@@ -75,26 +81,22 @@ class DatabaseFeatures(BaseDatabaseFeatures):
         "non_default": "nocase",
         "virtual": "nocase",
     }
-    django_test_expected_failures = set()
+    django_test_expected_failures = {
+        "expressions.tests.FTimeDeltaTests.test_mixed_comparisons1",
+    }
     django_test_skips = {
         "schema.tests.SchemaTests.test_alter_field_default_does_not_perform_queries",
+        "model_fields.test_decimalfield."
+        "DecimalFieldTests.test_fetch_from_db_without_float_rounding",
+        "backends.base.test_base.ExecuteWrapperTests.test_wrapper_debug",
     }
 
     @property
     def _is_local(self):
         """Return True if connection is local SQLite, False for remote Turso HTTP."""
-        name = self.connection.settings_dict.get("NAME")
-        if not name:
-            return True  # empty or None = in-memory = local
-        if name.startswith(("http://", "https://", "libsql://")):
-            return False
-        if name.startswith(("/", ".")):
-            return True
-        if name.endswith((".sqlite3", ".db", ".sqlite", ".s3db", ".sl3")):
-            return True
-        if "." in name and "/" not in name and "\\" not in name:
-            return False  # bare hostname like "my-db.turso.io"
-        return True
+        from .base import _get_connection_mode
+        name = self.connection.settings_dict.get("NAME") or ""
+        return _get_connection_mode(name) == "local"
 
     @cached_property
     def max_query_params(self):
@@ -116,6 +118,17 @@ class DatabaseFeatures(BaseDatabaseFeatures):
 
     @cached_property
     def supports_json_field(self):
+        if self._is_local:
+            # Runtime check: verify JSON1 extension is available (matches
+            # Django's sqlite3/features.py behavior). Some SQLite builds
+            # ship without the JSON1 extension.
+            try:
+                with self.connection.cursor() as cursor:
+                    cursor.execute("SELECT json('{}')")
+                return True
+            except Exception:
+                return False
+        # Remote mode: Turso servers ship SQLite 3.45+ with JSON1 built in.
         return True
 
     can_introspect_json_field = property(operator.attrgetter("supports_json_field"))

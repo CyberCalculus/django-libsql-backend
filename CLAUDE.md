@@ -2,14 +2,14 @@
 
 ## Overview
 
-Django database backend for **libSQL / Turso** — dual-mode: remote Turso databases over HTTP REST API, or local SQLite files. Same ENGINE (`django_libsql`), same ORM, same migrations.
+Django database backend for **libSQL / Turso** — triple-mode: remote Turso databases over HTTP REST API, WebSocket (Hrana), or local SQLite files. Same ENGINE (`django_libsql`), same ORM, same migrations.
 
 Connection type is auto-detected from the `NAME` setting in `DATABASES`.
 
 ### Quick Reference
 - **Repo**: `git@github.com-second:CyberCalculus/django-libsql-backend.git`
-- **PyPI**: https://pypi.org/project/django-libsql-backend/0.1.0/
-- **Install**: `pip install django-libsql-backend`
+- **PyPI**: https://pypi.org/project/django-libsql-backend/0.1.2/
+- **Install**: `pip install django-libsql-backend` (or `pip install django-libsql-backend[hrana]` for WebSocket mode)
 
 ## Build & Publish
 
@@ -31,19 +31,20 @@ Build tools venv: `../.venv-build/` (contains `build`, `twine`)
 
 ```
 django_libsql/
-├── __init__.py        # Exports DatabaseWrapper, __version__ (0.1.0)
-├── base.py            # DatabaseWrapper, TursoCursor, TursoHTTPConnection, LocalSQLiteCursor
-├── features.py        # SQLite-compatible DatabaseFeatures flags (39 flags)
+├── __init__.py        # Exports DatabaseWrapper, __version__ (0.1.2)
+├── base.py            # DatabaseWrapper, TursoCursor, TursoHTTPConnection, LocalSQLiteCursor, HranaCursor
+├── features.py        # SQLite-compatible DatabaseFeatures flags
 ├── operations.py      # SQL generation — date/time, upsert, operators, pattern ops
 ├── schema.py          # Proxy to Django's built-in SQLite schema editor
 ├── introspection.py   # Proxy to Django's built-in SQLite introspection
 ├── creation.py        # Test database create/destroy
-└── client.py          # dbshell — delegates to `turso db shell`
+├── client.py          # dbshell — delegates to `turso db shell` or `sqlite3`
+└── functions.py      # Custom DB functions (local mode, delegates to Django's _functions)
 ```
 
 ## Architecture
 
-### Dual-Mode Connection
+### Triple-Mode Connection
 
 `_is_local_name()` in `base.py` auto-detects the mode from the NAME string:
 
@@ -52,6 +53,7 @@ django_libsql/
 | HTTPS URL | Remote | `https://my-db.turso.io` |
 | Bare hostname | Remote | `my-db.turso.io` |
 | `libsql://` URL | Remote | `libsql://my-db.turso.io` (converted to https) |
+| `ws://`/`wss://` URL | Remote | `wss://my-db.turso.io` (WebSocket/Hrana) |
 | File path (absolute) | Local | `/var/data/db.sqlite3` |
 | File path (relative) | Local | `./dev.db` |
 | Bare filename | Local | `db.sqlite3` |
@@ -76,7 +78,7 @@ django_libsql/
 - Uses Python stdlib `sqlite3` module
 - `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON` set on every new connection
 - Full transaction support: `BEGIN`, `COMMIT`, `ROLLBACK`, savepoints
-- `isolation_level` toggled: `None` (autocommit) / `DEFERRED` (implicit transactions)
+- `isolation_level` toggled: `None` (autocommit) / `""` (implicit transactions, lets sqlite3 choose default)
 - `check_same_thread=False` on connect for Django's multi-thread usage
 - Also converts `%s` → `?` for consistency
 
@@ -96,7 +98,7 @@ These flags use `@cached_property` with `self._is_local` to return correct value
 
 | Flag | Local | Remote | Why remote differs |
 |---|---|---|---|
-| `atomic_transactions` | False | True | Remote auto-commits each statement |
+| `atomic_transactions` | False | False | Django manages transactions explicitly via atomic() |
 | `can_rollback_ddl` | True | False | DDL cannot rollback over stateless HTTP |
 | `can_defer_constraint_checks` | True | False | FK deferral needs persistent connection state |
 | `uses_savepoints` | True | False | Savepoints are client-side buffer snapshots only |
@@ -141,13 +143,22 @@ Timezone conversion (`tzname` parameter) is accepted but ignored in all `RemoteD
 ## Django Settings Usage
 
 ```python
-# Remote (production)
+# Remote via HTTP (production)
 DATABASES = {
     "default": {
         "ENGINE": "django_libsql",
         "NAME": "https://my-db.turso.io",
         "AUTH_TOKEN": "jwt-token-here",
         "OPTIONS": {"timeout": 30},
+    }
+}
+
+# Remote via libsql:// (auto-converted to HTTPS)
+DATABASES = {
+    "default": {
+        "ENGINE": "django_libsql",
+        "NAME": "libsql://my-db.turso.io",
+        "AUTH_TOKEN": "jwt-token-here",
     }
 }
 
@@ -164,7 +175,7 @@ DATABASES = {
 
 - **Python**: 3.13, PEP 668 protected (use venvs)
 - **Django**: 6.0.5 (project), 4.2+ (package dependency)
-- **Package metadata**: author=CyberCalculus, license=MIT, version=0.1.0
+- **Package metadata**: author=CyberCalculus, license=MIT, version=0.1.2
 
 ## Audit & Comparison History
 

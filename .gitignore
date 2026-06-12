@@ -1,24 +1,27 @@
-# Byte-compiled
+# Byte-compiled / optimized
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Distribution
+# Distribution / packaging
 dist/
 build/
 *.egg-info/
 *.egg
+*.whl
 
 # Virtual environments
 .venv/
 venv/
 env/
+ENV/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
@@ -26,3 +29,30 @@ Thumbs.db
 
 # Django
 *.log
+db.sqlite3
+db.sqlite3-journal
+
+# Test / coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.pytype/
+
+# Linting
+.ruff_cache/
+
+# Environment variables
+.env
+.env.*
+
+# Local settings (may contain secrets)
+local_settings.py
+
+# Draft / scratch files
+REDDIT_POST.md

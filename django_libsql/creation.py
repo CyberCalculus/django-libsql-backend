@@ -11,8 +11,13 @@ Remote (Turso HTTP) mode:
     TEST["NAME"] can override to point at a dedicated test database.
 """
 
-import os
+from __future__ import annotations
 
+import os
+import shutil
+
+from django.conf import settings
+from django.core.management import call_command
 from django.db.backends.base.creation import BaseDatabaseCreation
 
 
@@ -20,6 +25,10 @@ class DatabaseCreation(BaseDatabaseCreation):
     @staticmethod
     def is_in_memory_db(database_name):
         """Return True if *database_name* describes an in-memory SQLite DB."""
+        from pathlib import Path
+
+        if isinstance(database_name, Path):
+            return False
         return database_name == ":memory:" or "mode=memory" in database_name
 
     def _get_test_db_name(self):
@@ -55,44 +64,121 @@ class DatabaseCreation(BaseDatabaseCreation):
         test_db_name = self._get_test_db_name()
 
         if not keepdb:
+            # Autoclobber check for local file databases.
+            if (
+                not self.is_in_memory_db(test_db_name)
+                and os.path.exists(test_db_name)
+            ):
+                if not autoclobber:
+                    confirm = input(
+                        f"Type 'yes' to delete test database "
+                        f"'{test_db_name}', 'no' to cancel: "
+                    )
+                    if confirm != "yes":
+                        import sys
+                        sys.exit(1)
             self._destroy_test_db(test_db_name, verbosity=verbosity)
+
+        # Close existing connection so the new settings take effect.
+        self.connection.close()
+
+        # Point the connection at the test database.
+        settings.DATABASES[self.connection.alias]["NAME"] = test_db_name
+        self.connection.settings_dict["NAME"] = test_db_name
+
+        # Run migrations to create the schema.
+        call_command(
+            "migrate",
+            verbosity=max(verbosity - 1, 0),
+            interactive=False,
+            database=self.connection.alias,
+            run_syncdb=True,
+        )
+
+        # Create the cache table if needed.
+        try:
+            call_command(
+                "createcachetable", database=self.connection.alias
+            )
+        except Exception:
+            pass
+
+        # Ensure the connection is established against the test database.
+        self.connection.ensure_connection()
 
         return test_db_name
 
-    def destroy_test_db(self, old_database_name, verbosity=1, keepdb=False):
+    def destroy_test_db(
+        self, old_database_name, verbosity=1, keepdb=False, suffix=None
+    ):
         if not keepdb:
             self._destroy_test_db(old_database_name, verbosity=verbosity)
+
+        # Close the connection and restore the original database name.
+        self.connection.close()
+        settings.DATABASES[self.connection.alias]["NAME"] = (
+            self.connection.settings_dict.get("_original_name", old_database_name)
+        )
+        self.connection.settings_dict["NAME"] = settings.DATABASES[
+            self.connection.alias
+        ]["NAME"]
 
     def _destroy_test_db(self, test_database_name, verbosity=1):
         from .base import _is_local_name
 
         if _is_local_name(test_database_name):
-            if not self.is_in_memory_db(test_database_name):
-                if os.path.exists(test_database_name):
-                    if verbosity >= 1:
-                        self.log(
-                            "Destroying test database '%s'..."
-                            % test_database_name
-                        )
-                    os.remove(test_database_name)
-                return
-            # In-memory: nothing to delete on disk.
+            if not self.is_in_memory_db(test_database_name) and os.path.exists(test_database_name):
+                if verbosity >= 1:
+                    self.log(
+                        "Destroying test database '%s'..."
+                        % test_database_name
+                    )
+                os.remove(test_database_name)
             return
 
-        # Remote (Turso HTTP): drop all user tables from the database.
+        # Remote (Turso HTTP): drop all user objects from the database.
         if verbosity >= 1:
             self.log(
                 "Destroying test database tables on '%s'..."
                 % test_database_name
             )
         with self.connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND "
-                "name NOT LIKE 'sqlite_%%' AND name NOT LIKE '_%%'"
-            )
-            tables = [row[0] for row in cursor.fetchall()]
-            for table in tables:
-                cursor.execute(f'DROP TABLE IF EXISTS "{table}"')
+            for obj_type in ("table", "index", "view", "trigger"):
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='%s' AND "
+                    "name NOT LIKE 'sqlite_%%'" % obj_type
+                )
+                objects = [row[0] for row in cursor.fetchall()]
+                for obj in objects:
+                    if obj_type == "table":
+                        cursor.execute(f'DROP TABLE IF EXISTS "{obj}"')
+                    elif obj_type == "index":
+                        cursor.execute(f'DROP INDEX IF EXISTS "{obj}"')
+                    elif obj_type == "view":
+                        cursor.execute(f'DROP VIEW IF EXISTS "{obj}"')
+                    elif obj_type == "trigger":
+                        cursor.execute(f'DROP TRIGGER IF EXISTS "{obj}"')
+
+    def _clone_test_db(self, suffix, verbosity=1, keepdb=False):
+        """Clone the test database for parallel test execution."""
+        from .base import _is_local_name
+
+        test_db_name = self._get_test_db_name()
+        clone_name = self.get_test_db_clone_name(test_db_name, suffix)
+
+        if _is_local_name(test_db_name):
+            if not keepdb and os.path.exists(clone_name):
+                os.remove(clone_name)
+            shutil.copy(test_db_name, clone_name)
+            return clone_name
+
+        # Remote: cannot clone — return the original name.
+        return test_db_name
+
+    def get_test_db_clone_name(self, test_db_name, suffix):
+        """Return the clone database name for parallel test execution."""
+        root, ext = os.path.splitext(test_db_name)
+        return f"{root}_{suffix}{ext}"
 
     def get_test_db_clone_settings(self, suffix):
         """Return settings dict for a parallel test clone.
