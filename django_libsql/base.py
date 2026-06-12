@@ -33,13 +33,12 @@ import sqlite3
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-
 from sqlite3 import dbapi2 as Database
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import (
-    DataError,
     DatabaseError,
+    DataError,
     IntegrityError,
     OperationalError,
     ProgrammingError,
@@ -72,11 +71,11 @@ Database.register_adapter(decimal.Decimal, str)
 Database.register_adapter(datetime.date, adapt_date)
 Database.register_adapter(datetime.datetime, adapt_datetime)
 
-from .features import DatabaseFeatures
-from .operations import DatabaseOperations, RemoteDatabaseOperations
 from .client import DatabaseClient
 from .creation import DatabaseCreation
+from .features import DatabaseFeatures
 from .introspection import DatabaseIntrospection
+from .operations import DatabaseOperations, RemoteDatabaseOperations
 from .schema import DatabaseSchemaEditor
 
 FORMAT_QMARK_REGEX = re.compile(r"(?<!%)%s")

@@ -13,24 +13,41 @@ from django.conf import settings
 from django.core.exceptions import FieldError
 from django.db import DatabaseError, NotSupportedError, models
 from django.db.backends.base.operations import BaseDatabaseOperations
-
-try:
-    from django.db.models.functions.text import (
-        MD5, SHA1, SHA224, SHA256, SHA384, SHA512,
-        LPad, RPad, Repeat, Reverse,
-    )
-    _UNSUPPORTED_TEXT_FUNCTIONS = (
-        MD5, SHA1, SHA224, SHA256, SHA384, SHA512,
-        LPad, RPad, Repeat, Reverse,
-    )
-except ImportError:
-    _UNSUPPORTED_TEXT_FUNCTIONS = ()
-from django.db.models.constants import OnConflict
 from django.db.models import CompositePrimaryKey
+from django.db.models.constants import OnConflict
 from django.db.models.expressions import Col
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.functional import cached_property
+
+try:
+    from django.db.models.functions.text import (
+        MD5,
+        SHA1,
+        SHA224,
+        SHA256,
+        SHA384,
+        SHA512,
+        LPad,
+        Repeat,
+        Reverse,
+        RPad,
+    )
+
+    _UNSUPPORTED_TEXT_FUNCTIONS = (
+        MD5,
+        SHA1,
+        SHA224,
+        SHA256,
+        SHA384,
+        SHA512,
+        LPad,
+        RPad,
+        Repeat,
+        Reverse,
+    )
+except ImportError:
+    _UNSUPPORTED_TEXT_FUNCTIONS = ()
 
 
 class DatabaseOperations(BaseDatabaseOperations):
