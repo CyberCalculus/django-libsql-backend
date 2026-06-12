@@ -208,9 +208,7 @@ class DatabaseOperations(BaseDatabaseOperations):
 
     def sql_flush(self, style, tables, *, reset_sequences=False, allow_cascade=False):
         if tables and allow_cascade:
-            tables = set(
-                chain.from_iterable(self._references_graph(table) for table in tables)
-            )
+            tables = set(chain.from_iterable(self._references_graph(table) for table in tables))
         sql = [
             "%s %s %s;"
             % (
@@ -238,9 +236,7 @@ class DatabaseOperations(BaseDatabaseOperations):
                 style.SQL_KEYWORD("WHERE"),
                 style.SQL_FIELD(self.quote_name("name")),
                 style.SQL_KEYWORD("IN"),
-                ", ".join(
-                    ["'%s'" % seq["table"] for seq in sequences]
-                ),
+                ", ".join(["'%s'" % seq["table"] for seq in sequences]),
             ),
         ]
 
@@ -252,8 +248,7 @@ class DatabaseOperations(BaseDatabaseOperations):
                 value = timezone.make_naive(value, self.connection.timezone)
             else:
                 raise ValueError(
-                    "SQLite does not support timezone-aware datetimes when "
-                    "USE_TZ is False."
+                    "SQLite does not support timezone-aware datetimes when USE_TZ is False."
                 )
         return str(value)
 
@@ -304,9 +299,7 @@ class DatabaseOperations(BaseDatabaseOperations):
     def get_decimalfield_converter(self, expression):
         create_decimal = decimal.Context(prec=15).create_decimal_from_float
         if isinstance(expression, Col):
-            quantize_value = decimal.Decimal(1).scaleb(
-                -expression.output_field.decimal_places
-            )
+            quantize_value = decimal.Decimal(1).scaleb(-expression.output_field.decimal_places)
 
             def converter(value, expression, connection):
                 if value is not None:
@@ -375,10 +368,7 @@ class DatabaseOperations(BaseDatabaseOperations):
             return "ON CONFLICT(%s) DO UPDATE SET %s" % (
                 ", ".join(map(self.quote_name, unique_fields)),
                 ", ".join(
-                    [
-                        f"{field} = EXCLUDED.{field}"
-                        for field in map(self.quote_name, update_fields)
-                    ]
+                    [f"{field} = EXCLUDED.{field}" for field in map(self.quote_name, update_fields)]
                 ),
             )
         return super().on_conflict_suffix_sql(
@@ -452,8 +442,10 @@ class RemoteDatabaseOperations(DatabaseOperations):
         (re.compile(r"\bCOT\s*\(", re.IGNORECASE), "(1.0 / TAN("),
         # SIGN(x) → CASE WHEN x > 0 THEN 1 WHEN x < 0 THEN -1 ELSE 0 END
         # Applied for single-argument SIGN calls.
-        (re.compile(r"\bSIGN\s*\(([^()]*)\)", re.IGNORECASE),
-         r"CASE WHEN \1 > 0 THEN 1 WHEN \1 < 0 THEN -1 ELSE 0 END"),
+        (
+            re.compile(r"\bSIGN\s*\(([^()]*)\)", re.IGNORECASE),
+            r"CASE WHEN \1 > 0 THEN 1 WHEN \1 < 0 THEN -1 ELSE 0 END",
+        ),
     ]
 
     @staticmethod
@@ -494,8 +486,7 @@ class RemoteDatabaseOperations(DatabaseOperations):
             return "CAST(strftime('%%u', %s) AS integer)" % sql
         if lookup_type == "week":
             return (
-                "CAST((strftime('%%j', %s, '-3 days', 'weekday 4') - 1) / 7 + 1 "
-                "AS integer)" % sql
+                "CAST((strftime('%%j', %s, '-3 days', 'weekday 4') - 1) / 7 + 1 AS integer)" % sql
             )
         if lookup_type == "second":
             return "CAST(strftime('%%S', %s) AS integer)" % sql
@@ -509,9 +500,7 @@ class RemoteDatabaseOperations(DatabaseOperations):
         fmt = self._DATE_EXTRACT_FORMATS.get(lt)
         if fmt:
             return "CAST(strftime('%s', %s) AS integer)" % (fmt, sql), params
-        raise NotSupportedError(
-            "Date extract '%s' is not supported in remote mode." % lt
-        )
+        raise NotSupportedError("Date extract '%s' is not supported in remote mode." % lt)
 
     def datetime_extract_sql(self, lookup_type, sql, params, tzname):
         lt = lookup_type.lower()
@@ -521,9 +510,7 @@ class RemoteDatabaseOperations(DatabaseOperations):
         fmt = self._DATETIME_EXTRACT_FORMATS.get(lt)
         if fmt:
             return "CAST(strftime('%s', %s) AS integer)" % (fmt, sql), params
-        raise NotSupportedError(
-            "Datetime extract '%s' is not supported in remote mode." % lt
-        )
+        raise NotSupportedError("Datetime extract '%s' is not supported in remote mode." % lt)
 
     def time_extract_sql(self, lookup_type, sql, params):
         lt = lookup_type.lower()
@@ -533,9 +520,7 @@ class RemoteDatabaseOperations(DatabaseOperations):
         fmt = {"hour": "%H", "minute": "%M", "second": "%S"}.get(lt)
         if fmt:
             return "CAST(strftime('%s', %s) AS integer)" % (fmt, sql), params
-        raise NotSupportedError(
-            "Time extract '%s' is not supported in remote mode." % lt
-        )
+        raise NotSupportedError("Time extract '%s' is not supported in remote mode." % lt)
 
     @staticmethod
     def _quarter_trunc_sql(sql, suffix=""):
@@ -567,9 +552,7 @@ class RemoteDatabaseOperations(DatabaseOperations):
             return self._quarter_trunc_sql(sql), params
         if lt == "week":
             return self._week_trunc_sql(sql), params
-        raise NotSupportedError(
-            "Date trunc '%s' is not supported in remote mode." % lt
-        )
+        raise NotSupportedError("Date trunc '%s' is not supported in remote mode." % lt)
 
     def datetime_trunc_sql(self, lookup_type, sql, params, tzname=None):
         lt = lookup_type.lower()
@@ -589,9 +572,7 @@ class RemoteDatabaseOperations(DatabaseOperations):
         fmt = fmts.get(lt)
         if fmt:
             return "strftime('%s', %s)" % (fmt, sql), params
-        raise NotSupportedError(
-            "Datetime trunc '%s' is not supported in remote mode." % lt
-        )
+        raise NotSupportedError("Datetime trunc '%s' is not supported in remote mode." % lt)
 
     def time_trunc_sql(self, lookup_type, sql, params, tzname=None):
         lt = lookup_type.lower()
@@ -603,9 +584,7 @@ class RemoteDatabaseOperations(DatabaseOperations):
         fmt = fmts.get(lt)
         if fmt:
             return "strftime('%s', %s)" % (fmt, sql), params
-        raise NotSupportedError(
-            "Time trunc '%s' is not supported in remote mode." % lt
-        )
+        raise NotSupportedError("Time trunc '%s' is not supported in remote mode." % lt)
 
     def datetime_cast_date_sql(self, sql, params, tzname):
         return "date(%s)" % sql, params
@@ -621,19 +600,14 @@ class RemoteDatabaseOperations(DatabaseOperations):
             # (julianday('2000-01-01 ' || lhs) - julianday('2000-01-01 ' || rhs))
             # * 86400000000 → microseconds
             return (
-                "(julianday('2000-01-01 ' || %s) - "
-                "julianday('2000-01-01 ' || %s)) * 86400000000"
+                "(julianday('2000-01-01 ' || %s) - julianday('2000-01-01 ' || %s)) * 86400000000"
             ) % (lhs_sql, rhs_sql), params
         # timestamp_diff: (julianday(lhs) - julianday(rhs)) * 86400000000
-        return (
-            "(julianday(%s) - julianday(%s)) * 86400000000"
-        ) % (lhs_sql, rhs_sql), params
+        return ("(julianday(%s) - julianday(%s)) * 86400000000") % (lhs_sql, rhs_sql), params
 
     def combine_expression(self, connector, sub_expressions):
         if connector == "#":
-            raise NotSupportedError(
-                "BITXOR is not available in remote (Turso HTTP) mode."
-            )
+            raise NotSupportedError("BITXOR is not available in remote (Turso HTTP) mode.")
         return super().combine_expression(connector, sub_expressions)
 
     def combine_duration_expression(self, connector, sub_expressions):
@@ -652,13 +626,9 @@ class RemoteDatabaseOperations(DatabaseOperations):
             raise ValueError("Too many params for timedelta operations.")
         lhs, rhs = sub_expressions
         if connector == "+":
-            return (
-                "datetime(%s, '+' || (%s) / 1000000.0 || ' seconds')"
-            ) % (lhs, rhs)
+            return ("datetime(%s, '+' || (%s) / 1000000.0 || ' seconds')") % (lhs, rhs)
         elif connector == "-":
-            return (
-                "datetime(%s, '-' || (%s) / 1000000.0 || ' seconds')"
-            ) % (lhs, rhs)
+            return ("datetime(%s, '-' || (%s) / 1000000.0 || ' seconds')") % (lhs, rhs)
         elif connector == "*":
             return "(%s) * (%s)" % (lhs, rhs)
         else:

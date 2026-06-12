@@ -10,11 +10,14 @@ from django.utils.functional import cached_property
 
 class DatabaseFeatures(BaseDatabaseFeatures):
     minimum_database_version = (3, 31)
+
     @cached_property
     def test_db_allows_multiple_connections(self):
         return not self._is_local
+
     supports_unspecified_pk = True
     supports_timezones = False
+
     @cached_property
     def atomic_transactions(self):
         # Both modes: Django manages transactions explicitly via atomic()
@@ -22,38 +25,49 @@ class DatabaseFeatures(BaseDatabaseFeatures):
         # sqlite3's native transaction support. Setting this to False
         # matches Django's built-in SQLite backend behavior.
         return False
+
     @cached_property
     def can_rollback_ddl(self):
         return self._is_local
+
     can_create_inline_fk = False
     requires_literal_defaults = True
+
     @cached_property
     def can_clone_databases(self):
         return self._is_local
+
     supports_temporal_subtraction = True
     ignores_table_name_case = True
     supports_cast_with_precision = False
     time_cast_precision = 3
+
     @cached_property
     def uses_savepoints(self):
         return self._is_local
+
     @cached_property
     def can_release_savepoints(self):
         return self._is_local
+
     has_case_insensitive_like = True
     supports_parentheses_in_compound = False
+
     @cached_property
     def can_defer_constraint_checks(self):
         return self._is_local
+
     supports_over_clause = True
     supports_frame_range_fixed_distance = True
     supports_frame_exclusion = True
     supports_aggregate_filter_clause = True
+
     @cached_property
     def supports_aggregate_order_by_clause(self):
         if self._is_local:
             return self.connection.get_database_version() >= (3, 44, 0)
         return True
+
     supports_json_field_contains = False
     supports_update_conflicts = True
     supports_update_conflicts_with_target = True
@@ -61,14 +75,17 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     supports_index_on_text_field = True
     supports_stored_generated_columns = True
     supports_virtual_generated_columns = True
+
     @cached_property
     def can_alter_table_drop_column(self):
         if self._is_local:
             return self.connection.get_database_version() >= (3, 35, 5)
         return True
+
     @cached_property
     def supports_transactions(self):
         return self._is_local
+
     supports_unlimited_charfield = True
     supports_any_value = True
     supports_aggregate_distinct_multiple_argument = False
@@ -95,6 +112,7 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     def _is_local(self):
         """Return True if connection is local SQLite, False for remote Turso HTTP."""
         from .base import _get_connection_mode
+
         name = self.connection.settings_dict.get("NAME") or ""
         return _get_connection_mode(name) == "local"
 
@@ -144,6 +162,4 @@ class DatabaseFeatures(BaseDatabaseFeatures):
         operator.attrgetter("can_return_columns_from_insert")
     )
 
-    can_return_rows_from_update = property(
-        operator.attrgetter("can_return_columns_from_insert")
-    )
+    can_return_rows_from_update = property(operator.attrgetter("can_return_columns_from_insert"))

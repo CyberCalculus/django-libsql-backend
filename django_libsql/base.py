@@ -82,15 +82,20 @@ FORMAT_QMARK_REGEX = re.compile(r"(?<!%)%s")
 
 # SQL prefixes that indicate a write statement (cached for buffer-or-execute).
 _WRITE_PREFIXES = (
-    "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "DROP",
+    "ALTER",
     "REPLACE",
 )
 
 
 def _strip_sql_comments(sql):
     """Remove SQL comments from a statement for write-detection purposes."""
-    sql = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
-    sql = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
+    sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
+    sql = re.sub(r"--.*$", "", sql, flags=re.MULTILINE)
     return sql
 
 
@@ -278,9 +283,7 @@ class TursoHTTPConnection:
 
     def buffer_statement(self, sql, args):
         """Append a write statement to the transaction buffer."""
-        self._transaction_buffer.append(
-            {"stmt": {"sql": sql, "args": list(args) if args else []}}
-        )
+        self._transaction_buffer.append({"stmt": {"sql": sql, "args": list(args) if args else []}})
 
     def _flush_with_begin_commit(self):
         """Send buffered statements wrapped in BEGIN/COMMIT as a batch.
@@ -292,9 +295,7 @@ class TursoHTTPConnection:
         if not self._transaction_buffer:
             return None
         steps = [{"stmt": {"sql": "BEGIN"}}]
-        steps.extend(
-            {"stmt": {"sql": pragma}} for pragma in self._CONNECTION_PRAGMAS
-        )
+        steps.extend({"stmt": {"sql": pragma}} for pragma in self._CONNECTION_PRAGMAS)
         steps.extend(self._transaction_buffer)
         steps.append({"stmt": {"sql": "COMMIT"}})
         try:
@@ -342,16 +343,12 @@ class TursoHTTPConnection:
             try:
                 return json.loads(resp.read())
             except json.JSONDecodeError:
-                raise OperationalError(
-                    "Turso returned malformed JSON response"
-                )
+                raise OperationalError("Turso returned malformed JSON response")
         except urllib.error.HTTPError as e:
             body_text = e.read().decode(errors="replace")
             self._raise_http_error(e.code, body_text)
         except urllib.error.URLError as e:
-            raise OperationalError(
-                f"Turso connection error: {e.reason}"
-            ) from e
+            raise OperationalError(f"Turso connection error: {e.reason}") from e
 
     @staticmethod
     def _raise_http_error(code, body):
@@ -439,8 +436,7 @@ class TursoCursor:
         result = data.get("result", {})
         self._columns = tuple(c["name"] for c in result.get("cols", []))
         self._rows = [
-            tuple(_turso_value_to_py(cell) for cell in row)
-            for row in result.get("rows", [])
+            tuple(_turso_value_to_py(cell) for cell in row) for row in result.get("rows", [])
         ]
         self._index = 0
         self._rowcount = result.get("affected_row_count", -1)
@@ -468,8 +464,7 @@ class TursoCursor:
                 ]
             else:
                 self._description = [
-                    (name, None, None, None, None, None, None)
-                    for name in self._columns
+                    (name, None, None, None, None, None, None) for name in self._columns
                 ]
         return self
 
@@ -486,9 +481,11 @@ class TursoCursor:
         # fetch_returned_rows() can capture results -- they cannot be
         # buffered. This means RETURNING inserts auto-commit inside
         # transactions, similar to lastrowid access triggering auto-flush.
-        if (self.connection.in_transaction
-                and _is_write_statement(sql)
-                and "RETURNING" not in sql.upper()):
+        if (
+            self.connection.in_transaction
+            and _is_write_statement(sql)
+            and "RETURNING" not in sql.upper()
+        ):
             args = _build_turso_args(params, param_names)
             self.connection.buffer_statement(sql, args)
             self._buffered = True
@@ -502,8 +499,7 @@ class TursoCursor:
         # Auto-flush buffered writes before a read so the read sees any
         # prior writes from the same transaction. After flushing, those
         # writes are committed and cannot be rolled back.
-        if (self.connection.in_transaction and
-                self.connection._transaction_buffer):
+        if self.connection.in_transaction and self.connection._transaction_buffer:
             self.connection._flush_with_begin_commit()
 
         payload = {"stmt": {"sql": sql}}
@@ -531,9 +527,11 @@ class TursoCursor:
         # In a remote transaction: buffer each parameter set.
         # RETURNING statements execute immediately (not buffered) to
         # preserve result availability.
-        if (self.connection.in_transaction
-                and _is_write_statement(sql)
-                and "RETURNING" not in sql.upper()):
+        if (
+            self.connection.in_transaction
+            and _is_write_statement(sql)
+            and "RETURNING" not in sql.upper()
+        ):
             count = 0
             for params in param_list:
                 args = _build_turso_args(params, param_names)
@@ -549,8 +547,7 @@ class TursoCursor:
 
         # Auto-flush buffered writes before sending to server so results
         # include prior writes from the same transaction.
-        if (self.connection.in_transaction and
-                self.connection._transaction_buffer):
+        if self.connection.in_transaction and self.connection._transaction_buffer:
             self.connection._flush_with_begin_commit()
 
         steps = [
@@ -614,14 +611,14 @@ class TursoCursor:
         return None
 
     def fetchall(self):
-        rows = self._rows[self._index:]
+        rows = self._rows[self._index :]
         self._index = len(self._rows)
         return rows
 
     def fetchmany(self, size=None):
         if size is None:
             size = 1
-        rows = self._rows[self._index:self._index + size]
+        rows = self._rows[self._index : self._index + size]
         self._index += len(rows)
         return rows
 
@@ -872,9 +869,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         "istartswith": "LIKE %s ESCAPE '\\'",
         "iendswith": "LIKE %s ESCAPE '\\'",
     }
-    pattern_esc = (
-        r"REPLACE(REPLACE(REPLACE({}, '\', '\\'), '%%', '\%%'), '_', '\_')"
-    )
+    pattern_esc = r"REPLACE(REPLACE(REPLACE({}, '\', '\\'), '%%', '\%%'), '_', '\_')"
     pattern_ops = {
         "contains": r"LIKE '%%' || {} || '%%' ESCAPE '\'",
         "icontains": r"LIKE '%%' || UPPER({}) || '%%' ESCAPE '\'",
@@ -971,9 +966,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             if txn_mode:
                 txn_mode = txn_mode.upper()
                 if txn_mode not in self.transaction_modes:
-                    allowed = ", ".join(
-                        f"{m!r}" for m in sorted(self.transaction_modes)
-                    )
+                    allowed = ", ".join(f"{m!r}" for m in sorted(self.transaction_modes))
                     raise ImproperlyConfigured(
                         f"settings.DATABASES[{self.alias!r}]['OPTIONS']"
                         f"['transaction_mode'] is improperly configured to "
@@ -1034,9 +1027,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             return True
         try:
             if self._connection_mode == "http":
-                self.connection.request(
-                    "/v1/execute", {"stmt": {"sql": "SELECT 1"}}
-                )
+                self.connection.request("/v1/execute", {"stmt": {"sql": "SELECT 1"}})
             else:
                 self.connection.execute("SELECT 1")
             return True
@@ -1184,16 +1175,14 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
                 violations = chain.from_iterable(
                     cursor.execute(
-                        "PRAGMA foreign_key_check(%s)"
-                        % self.ops.quote_name(table_name)
+                        "PRAGMA foreign_key_check(%s)" % self.ops.quote_name(table_name)
                     ).fetchall()
                     for table_name in table_names
                 )
             for table_name, rowid, ref_table, fk_idx in violations:
                 # Build a richer error message by querying the FK details.
                 fk_info = cursor.execute(
-                    "PRAGMA foreign_key_list(%s)"
-                    % self.ops.quote_name(table_name)
+                    "PRAGMA foreign_key_list(%s)" % self.ops.quote_name(table_name)
                 ).fetchall()
                 # Find the specific FK that matches fk_idx.
                 fk_detail = ""
@@ -1201,9 +1190,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
                     # fk_info columns: id, seq, table, from, to, on_update, on_delete, match
                     if len(fk) > 4 and fk[0] == fk_idx:
                         fk_detail = (
-                            f" (FK '{table_name}.{fk[3]}' -> "
-                            f"'{fk[2]}.{fk[4]}', "
-                            f"on_delete={fk[6]})"
+                            f" (FK '{table_name}.{fk[3]}' -> '{fk[2]}.{fk[4]}', on_delete={fk[6]})"
                         )
                         break
                 raise IntegrityError(

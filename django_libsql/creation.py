@@ -50,10 +50,7 @@ class DatabaseCreation(BaseDatabaseCreation):
 
         if _is_local_name(name):
             if self.is_in_memory_db(name):
-                return (
-                    "file:memorydb_%s?mode=memory&cache=shared"
-                    % self.connection.alias
-                )
+                return "file:memorydb_%s?mode=memory&cache=shared" % self.connection.alias
             root, ext = os.path.splitext(name)
             return f"{root}_test{ext or '.sqlite3'}"
 
@@ -65,17 +62,14 @@ class DatabaseCreation(BaseDatabaseCreation):
 
         if not keepdb:
             # Autoclobber check for local file databases.
-            if (
-                not self.is_in_memory_db(test_db_name)
-                and os.path.exists(test_db_name)
-            ):
+            if not self.is_in_memory_db(test_db_name) and os.path.exists(test_db_name):
                 if not autoclobber:
                     confirm = input(
-                        f"Type 'yes' to delete test database "
-                        f"'{test_db_name}', 'no' to cancel: "
+                        f"Type 'yes' to delete test database '{test_db_name}', 'no' to cancel: "
                     )
                     if confirm != "yes":
                         import sys
+
                         sys.exit(1)
             self._destroy_test_db(test_db_name, verbosity=verbosity)
 
@@ -97,9 +91,7 @@ class DatabaseCreation(BaseDatabaseCreation):
 
         # Create the cache table if needed.
         try:
-            call_command(
-                "createcachetable", database=self.connection.alias
-            )
+            call_command("createcachetable", database=self.connection.alias)
         except Exception:
             pass
 
@@ -108,20 +100,16 @@ class DatabaseCreation(BaseDatabaseCreation):
 
         return test_db_name
 
-    def destroy_test_db(
-        self, old_database_name, verbosity=1, keepdb=False, suffix=None
-    ):
+    def destroy_test_db(self, old_database_name, verbosity=1, keepdb=False, suffix=None):
         if not keepdb:
             self._destroy_test_db(old_database_name, verbosity=verbosity)
 
         # Close the connection and restore the original database name.
         self.connection.close()
-        settings.DATABASES[self.connection.alias]["NAME"] = (
-            self.connection.settings_dict.get("_original_name", old_database_name)
+        settings.DATABASES[self.connection.alias]["NAME"] = self.connection.settings_dict.get(
+            "_original_name", old_database_name
         )
-        self.connection.settings_dict["NAME"] = settings.DATABASES[
-            self.connection.alias
-        ]["NAME"]
+        self.connection.settings_dict["NAME"] = settings.DATABASES[self.connection.alias]["NAME"]
 
     def _destroy_test_db(self, test_database_name, verbosity=1):
         from .base import _is_local_name
@@ -129,19 +117,13 @@ class DatabaseCreation(BaseDatabaseCreation):
         if _is_local_name(test_database_name):
             if not self.is_in_memory_db(test_database_name) and os.path.exists(test_database_name):
                 if verbosity >= 1:
-                    self.log(
-                        "Destroying test database '%s'..."
-                        % test_database_name
-                    )
+                    self.log("Destroying test database '%s'..." % test_database_name)
                 os.remove(test_database_name)
             return
 
         # Remote (Turso HTTP): drop all user objects from the database.
         if verbosity >= 1:
-            self.log(
-                "Destroying test database tables on '%s'..."
-                % test_database_name
-            )
+            self.log("Destroying test database tables on '%s'..." % test_database_name)
         with self.connection.cursor() as cursor:
             for obj_type in ("table", "index", "view", "trigger"):
                 cursor.execute(
