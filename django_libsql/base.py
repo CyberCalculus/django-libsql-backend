@@ -224,7 +224,6 @@ class TursoHTTPConnection:
 
     _CONNECTION_PRAGMAS = [
         "PRAGMA foreign_keys = ON",
-        "PRAGMA legacy_alter_table = OFF",
     ]
 
     def __init__(self, base_url, auth_token, timeout=30):
@@ -320,9 +319,10 @@ class TursoHTTPConnection:
         step_results = result.get("step_results", [])
         # Find the last step that returned a last_insert_rowid.
         for step in reversed(step_results):
-            rowid = step.get("last_insert_rowid")
-            if rowid is not None:
-                return rowid
+            if step is not None:
+                rowid = step.get("last_insert_rowid")
+                if rowid is not None:
+                    return rowid
         return None
 
     # -- HTTP transport ---------------------------------------------------
@@ -491,7 +491,16 @@ class TursoCursor:
             self._buffered = True
             self._rows = []
             self._columns = ()
-            self._rowcount = 0
+            # Use 1 as a conservative rowcount for buffered writes.
+            # The real affected_row_count is only known after the batch
+            # flushes on commit, but Django evaluates cursor.rowcount
+            # immediately after execute(). Returning 0 here causes
+            # Model.save() to treat UPDATE/DELETE as "no rows matched"
+            # and fall back to INSERT, producing UNIQUE constraint
+            # violations. A value of 1 errs on the side of assuming
+            # success — an UPDATE that genuinely matches 0 rows will
+            # report 1 instead, which is far safer than the reverse.
+            self._rowcount = 1
             self._lastrowid = None
             self._description = None
             return self
@@ -810,7 +819,7 @@ class HranaCursor:
 
 
 class DatabaseWrapper(BaseDatabaseWrapper):
-    vendor = "libsql"
+    vendor = "sqlite"
     display_name = "libSQL (Turso)"
     Database = Database
 
@@ -999,10 +1008,10 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         )
 
     def init_connection_state(self):
-        # Remote mode: critical PRAGMAs (foreign_keys, legacy_alter_table)
-        # are included at the beginning of every batch request in
-        # _flush_with_begin_commit() since PRAGMAs do not persist between
-        # stateless HTTP requests on Turso.
+        # Remote mode: PRAGMA foreign_keys = ON is included at the beginning
+        # of every batch request in _flush_with_begin_commit() since PRAGMAs
+        # do not persist between stateless HTTP requests on Turso.
+        # (legacy_alter_table is not sent — Turso's sqld does not support it.)
         # Local/Hrana: handled by get_new_connection() and the DBAPI layer.
         # No override needed — BaseDatabaseWrapper.init_connection_state()
         # handles RAN_DB_VERSION_CHECK correctly.

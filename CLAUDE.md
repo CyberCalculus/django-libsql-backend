@@ -84,7 +84,7 @@ django_libsql/
 
 ### Django Integration Points
 
-- `DatabaseWrapper` extends `BaseDatabaseWrapper`, sets `vendor = "libsql"`
+- `DatabaseWrapper` extends `BaseDatabaseWrapper`, sets `vendor = "sqlite"`
 - `SchemaEditorClass` → `DatabaseSchemaEditor` (proxies Django's built-in SQLite editor)
 - `introspection_class` → `DatabaseIntrospection` (proxies Django's built-in)
 - `client_class` → `DatabaseClient` (`dbshell` → `turso db shell`)
