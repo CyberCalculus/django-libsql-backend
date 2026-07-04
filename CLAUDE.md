@@ -8,7 +8,7 @@ Connection type is auto-detected from the `NAME` setting in `DATABASES`.
 
 ### Quick Reference
 - **Repo**: `git@github.com-second:CyberCalculus/django-libsql-backend.git`
-- **PyPI**: https://pypi.org/project/django-libsql-backend/0.1.2/
+- **PyPI**: https://pypi.org/project/django-libsql-backend/0.1.3/
 - **Install**: `pip install django-libsql-backend` (or `pip install django-libsql-backend[hrana]` for WebSocket mode)
 
 ## Build & Publish
@@ -31,7 +31,7 @@ Build tools venv: `../.venv-build/` (contains `build`, `twine`)
 
 ```
 django_libsql/
-├── __init__.py        # Exports DatabaseWrapper, __version__ (0.1.2)
+├── __init__.py        # Exports DatabaseWrapper, __version__ (0.1.3)
 ├── base.py            # DatabaseWrapper, TursoCursor, TursoHTTPConnection, LocalSQLiteCursor, HranaCursor
 ├── features.py        # SQLite-compatible DatabaseFeatures flags
 ├── operations.py      # SQL generation — date/time, upsert, operators, pattern ops
@@ -175,7 +175,7 @@ DATABASES = {
 
 - **Python**: 3.13, PEP 668 protected (use venvs)
 - **Django**: 6.0.5 (project), 4.2+ (package dependency)
-- **Package metadata**: author=CyberCalculus, license=MIT, version=0.1.2
+- **Package metadata**: author=CyberCalculus, license=MIT, version=0.1.3
 
 ## Audit & Comparison History
 
